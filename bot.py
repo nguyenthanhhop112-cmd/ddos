@@ -5,10 +5,10 @@ import time
 from telethon import TelegramClient, events, Button
 
 # Lấy cấu hình từ Environment Variables của Render
-API_ID = int(os.getenv("API_ID", 0))
-API_HASH = os.getenv("API_HASH", "")
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+API_ID = int(os.getenv("36437338", 0))
+API_HASH = os.getenv("18d34c7efc396d277f3db62baa078efc", "")
+BOT_TOKEN = os.getenv("8194497853:AAG6fdLREzWaNLq9oHWOCfqYiUm-avveefA", "")
+ADMIN_ID = int(os.getenv("6472034224", 0))
 
 bot = TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
 current_process = None
