@@ -94,7 +94,7 @@ def main_btns():
         [TButton.inline("➕ THÊM ACC MỚI", b"add_clone")],
         [TButton.inline("📱 DANH SÁCH CLONE", b"list_clones")],
         [TButton.inline("🏦 NẠP TIỀN", b"dep_menu"), TButton.inline("👤 VÍ CỦA TÔI", b"me")],
-        [TButton.url("💬 HỖ TRỢ", "https://t.me/your_admin")]
+        [TButton.url("💬 HỖ TRỢ", "https://t.me/nth_dev")]
     ]
 
 @bot.on(events.NewMessage(pattern="/start"))
@@ -270,8 +270,13 @@ async def main():
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
-    # Render yêu cầu dùng biến môi trường PORT
     port = int(os.environ.get("PORT", 10000))
+    # Flask chạy trong thread riêng
     Thread(target=lambda: app.run(host='0.0.0.0', port=port), daemon=True).start()
-    asyncio.get_event_loop().run_until_complete(main())
-                            
+    
+    # Sử dụng asyncio.run() thay cho get_event_loop() để tương thích Python 3.12+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+                                        
