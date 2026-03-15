@@ -8,17 +8,13 @@ from telethon.errors import SessionPasswordNeededError
 from supabase import create_client, Client
 
 # ===== CẤU HÌNH HỆ THỐNG =====
-# Thông tin Supabase của bạn
 SUPABASE_URL = "https://npjjarsmvmqvhdnkvtxc.supabase.co" 
 SUPABASE_KEY = "sb_publishable_gVXyT92FL0XpsiiEcerYFQ_RXE3n0ke"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Thông tin Telegram API & Bot
 API_ID = 36437338
 API_HASH = "18d34c7efc396d277f3db62baa078efc"
 BOT_TOKEN = "8475867709:AAGPINZGRgMnZBRDpNZWPGgBof0fY8N-0D4"
-
-# Thông tin cấu hình Shop
 STK_MSB = "96886693002613"
 BOT_GAME_TARGET = "xocdia88_bot_uytin_bot"
 PRICE_PER_DAY = 10000
@@ -37,40 +33,60 @@ def db_get_user(uid):
         return {"user_id": uid, "balance": 0}
     return res.data[0]
 
-# --- LOGIC ĐẬP HỘP (CLONE WORKER) ---
-async def worker_grab_loop(client, phone, owner_id):
+# --- NÂNG CẤP: LOGIC ĐẬP HỘP (CLONE WORKER) ---
+async def worker_grab_loop(client, phone, owner_id, expiry_str):
     try:
         if not client.is_connected():
             await client.connect()
         if not await client.is_user_authorized():
-            logging.error(f"Session {phone} không hợp lệ hoặc đã bị logout.")
+            logging.error(f"Session {phone} không hợp lệ.")
             return
 
+        # Nâng cấp: Đổi thời gian ra đây để không gọi Database liên tục gây lag
+        expiry_date = datetime.fromisoformat(expiry_str.replace('Z', '+00:00'))
+
+        # Nâng cấp: Lắng nghe cả tin nhắn mới và tin nhắn bị Edit (tránh sót hộp)
         @client.on(events.NewMessage(chats=BOT_GAME_TARGET))
+        @client.on(events.MessageEdited(chats=BOT_GAME_TARGET))
         async def handler(ev):
-            # Kiểm tra thời hạn clone mỗi khi có tin nhắn mới
-            res = supabase.table("my_clones").select("expiry").eq("phone", phone).execute()
-            if not res.data: return
-            
-            expiry = datetime.fromisoformat(res.data[0]['expiry'].replace('Z', '+00:00'))
-            if expiry < datetime.now(timezone.utc):
-                logging.info(f"Clone {phone} hết hạn. Đang ngắt kết nối...")
+            # Kiểm tra hạn dùng từ RAM
+            if datetime.now(timezone.utc) > expiry_date:
+                logging.info(f"Clone {phone} hết hạn. Đang xóa...")
+                await bot.send_message(owner_id, f"⚠️ **THÔNG BÁO:** Clone `{phone}` đã hết hạn thuê. Đã tự động ngắt kết nối!")
                 await client.disconnect()
+                supabase.table("my_clones").delete().eq("phone", phone).execute() # Tự gỡ khỏi DB
                 return
 
             if ev.reply_markup:
-                btn = next((b for r in ev.reply_markup.rows for b in r.buttons if "đập" in b.text.lower()), None)
-                if btn:
-                    await asyncio.sleep(random.uniform(0.1, 0.4)) # Delay ngẫu nhiên tránh quét
-                    try:
-                        await ev.click()
-                        await asyncio.sleep(2.0)
-                        msgs = await client.get_messages(BOT_GAME_TARGET, limit=1)
-                        if msgs and "là:" in msgs[0].message:
-                            code = re.search(r'là:\s*([A-Z0-9]+)', msgs[0].message).group(1)
-                            await bot.send_message(owner_id, f"🎊 **CLONE `{phone}` TRÚNG!**\n🔑 Code: `{code}`")
-                    except Exception as e:
-                        logging.error(f"Lỗi click clone {phone}: {e}")
+                # Nâng cấp: Quét kỹ các nút hơn
+                for row in ev.reply_markup.rows:
+                    for btn in row.buttons:
+                        if btn.text and "đập" in btn.text.lower():
+                            await asyncio.sleep(random.uniform(0.1, 0.4)) # Delay chống block
+                            try:
+                                # Nhấn nút chính xác
+                                click_result = await ev.click(text=btn.text)
+                                await asyncio.sleep(1.0)
+                                
+                                # Cách 1: Bắt mã code qua thông báo Popup ẩn
+                                if click_result and getattr(click_result, 'message', None):
+                                    msg_popup = click_result.message
+                                    if "là:" in msg_popup:
+                                        code = re.search(r'là:\s*([A-Z0-9]+)', msg_popup).group(1)
+                                        await bot.send_message(owner_id, f"🎊 **CLONE `{phone}` TRÚNG TỪ POPUP!**\n🔑 Code: `{code}`")
+                                        return
+                                
+                                # Cách 2: (Backup của bạn) Bắt mã code qua tin nhắn chat mới
+                                msgs = await client.get_messages(BOT_GAME_TARGET, limit=2)
+                                for m in msgs:
+                                    if m.message and "là:" in m.message:
+                                        m_match = re.search(r'là:\s*([A-Z0-9]+)', m.message)
+                                        if m_match:
+                                            code = m_match.group(1)
+                                            await bot.send_message(owner_id, f"🎊 **CLONE `{phone}` TRÚNG!**\n🔑 Code: `{code}`")
+                                            return
+                            except Exception as e:
+                                logging.error(f"Lỗi click clone {phone}: {e}")
         
         await client.run_until_disconnected()
     except Exception as e:
@@ -86,7 +102,7 @@ def main_menu_text(user):
         f"👤 ID: `{user['user_id']}`\n"
         f"💰 Số dư: **{user['balance']:,} VNĐ**\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ *Trạng thái: Máy chủ ổn định*"
+        f"⚡ *Trạng thái: Server siêu mượt*"
     )
 
 def main_btns():
@@ -174,16 +190,19 @@ async def add_clone_process(e):
 
             session_str = client.session.save()
             expiry_date = datetime.now(timezone.utc) + timedelta(days=1)
+            expiry_iso = expiry_date.isoformat()
             
             # Trừ tiền & Lưu DB
             supabase.table("users").update({"balance": user['balance'] - PRICE_PER_DAY}).eq("user_id", e.sender_id).execute()
             supabase.table("my_clones").insert({
                 "owner_id": e.sender_id, "phone": phone, 
-                "session": session_str, "expiry": expiry_date.isoformat()
+                "session": session_str, "expiry": expiry_iso
             }).execute()
 
             await conv.send_message(f"✅ **THÀNH CÔNG!**\nClone `{phone}` đang hoạt động.")
-            asyncio.create_task(worker_grab_loop(client, phone, e.sender_id))
+            
+            # Cập nhật lời gọi hàm
+            asyncio.create_task(worker_grab_loop(client, phone, e.sender_id, expiry_iso))
             
         except Exception as ex:
             await conv.send_message(f"❌ **LỖI:** {str(ex)}")
@@ -258,12 +277,12 @@ def webhook():
 # ==========================================================
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
-    # Tự động nạp lại các clone cũ khi restart bot
     try:
         clones = supabase.table("my_clones").select("*").execute()
         for c in clones.data:
             cl = TelegramClient(StringSession(c['session']), API_ID, API_HASH)
-            asyncio.create_task(worker_grab_loop(cl, c['phone'], c['owner_id']))
+            # Cập nhật lời gọi hàm
+            asyncio.create_task(worker_grab_loop(cl, c['phone'], c['owner_id'], c['expiry']))
     except: pass
     
     print(">>> BOT MAIN.PY ĐANG CHẠY... <<<")
@@ -271,12 +290,10 @@ async def main():
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
-    # Flask chạy trong thread riêng
     Thread(target=lambda: app.run(host='0.0.0.0', port=port), daemon=True).start()
     
-    # Sử dụng asyncio.run() thay cho get_event_loop() để tương thích Python 3.12+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-                                        
+                                
