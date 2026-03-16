@@ -19,15 +19,19 @@ BOT_TOKEN = "8475867709:AAGPINZGRgMnZBRDpNZWPGgBof0fY8N-0D4"
 STK_MSB = "96886693002613"
 BOT_GAME_TARGET = "xocdia88_bot_uytin_bot"
 
-# Cấu hình giá Bot (Tùy chỉnh tại đây)
 PRICE_BOT_1D = 10000 
 PRICE_BOT_7D = 60000
-PRICE_ADD_ACC = 0 # Phí thêm mỗi acc clone (nên để 0 nếu đã thu phí bot)
+PRICE_ADD_ACC = 0 
 
+# 👑 ID ADMIN CỦA BẠN
 ADMIN_ID = 7816353760 
 
 logging.basicConfig(level=logging.INFO)
 bot = TelegramClient(StringSession(), API_ID, API_HASH)
+
+# Tạo Event Loop toàn cục để tránh lỗi trên Render
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
 # ==================== HELPER FUNCTIONS ====================
 def db_get_user(uid):
@@ -38,23 +42,20 @@ def db_get_user(uid):
         return {"user_id": uid, "balance": 0, "bot_expiry": now_iso}
     return res.data[0]
 
-# ==================== LOGIC ĐẬP HỘP (ALWAYS ON) ====================
+# ==================== LOGIC ĐẬP HỘP ====================
 async def worker_grab_loop(client, phone, owner_id):
     try:
         if not client.is_connected(): await client.connect()
         if not await client.is_user_authorized():
-            logging.error(f"Clone {phone} die hoặc logout.")
+            logging.error(f"Clone {phone} die.")
             return
 
         @client.on(events.NewMessage(chats=BOT_GAME_TARGET))
         @client.on(events.MessageEdited(chats=BOT_GAME_TARGET))
         async def handler(ev):
-            # KIỂM TRA HẠN BOT CỦA CHỦ TRƯỚC KHI ĐẬP
             owner = db_get_user(owner_id)
             expiry = datetime.fromisoformat(owner['bot_expiry'].replace('Z', '+00:00'))
-            
-            if datetime.now(timezone.utc) > expiry:
-                return # Hết hạn Bot thì chỉ đứng nhìn, không đập
+            if datetime.now(timezone.utc) > expiry: return
 
             if ev.reply_markup:
                 for row in ev.reply_markup.rows:
@@ -63,11 +64,24 @@ async def worker_grab_loop(client, phone, owner_id):
                             await asyncio.sleep(random.uniform(0.1, 0.4))
                             try:
                                 click_res = await ev.click(text=btn.text)
-                                # Kiểm tra kết quả qua Popup hoặc Message mới
+                                
+                                # 1. Bắt code từ Popup (nếu có)
                                 if click_res and getattr(click_res, 'message', None):
                                     if "là:" in click_res.message:
                                         code = re.search(r'là:\s*([A-Z0-9]+)', click_res.message).group(1)
                                         await bot.send_message(owner_id, f"🎊 **ACC `{phone}` ĐẬP TRÚNG!**\n🔑 Code: `{code}`")
+                                        return
+                                
+                                # 2. Bắt code từ tin nhắn bot gửi ra (Fix lỗi không gửi code)
+                                await asyncio.sleep(1.0) # Đợi bot game phản hồi
+                                msgs = await client.get_messages(BOT_GAME_TARGET, limit=2)
+                                for m in msgs:
+                                    if m.message and "Mã code của bạn là:" in m.message:
+                                        m_match = re.search(r'là:\s*\n?([A-Z0-9]+)', m.message)
+                                        if m_match:
+                                            code = m_match.group(1)
+                                            await bot.send_message(owner_id, f"🎊 **ACC `{phone}` ĐẬP TRÚNG!**\n🔑 Code: `{code}`")
+                                            return
                             except Exception as e:
                                 logging.error(f"Lỗi click {phone}: {e}")
         
@@ -86,16 +100,14 @@ def main_menu_text(user):
         f"👤 ID: `{user['user_id']}`\n"
         f"💰 Số dư: **{user['balance']:,} VNĐ**\n"
         f"⏳ Hạn Bot: **{status}**\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ *Trạng thái: Máy chủ ổn định*"
+        f"━━━━━━━━━━━━━━━━━━"
     )
 
 def main_btns():
     return [
         [TButton.inline("💎 GIA HẠN BOT", b"renew_menu")],
         [TButton.inline("➕ THÊM ACC MỚI", b"add_clone"), TButton.inline("📱 DS CLONE", b"list_clones")],
-        [TButton.inline("🏦 NẠP TIỀN", b"dep_menu"), TButton.inline("👤 VÍ CỦA TÔI", b"me")],
-        [TButton.url("💬 HỖ TRỢ", "https://t.me/nth_dev")]
+        [TButton.inline("🏦 NẠP TIỀN", b"dep_menu"), TButton.inline("👤 VÍ CỦA TÔI", b"me")]
     ]
 
 @bot.on(events.NewMessage(pattern="/start"))
@@ -112,12 +124,8 @@ async def cb_handler(e):
         await e.edit(main_menu_text(db_get_user(uid)), buttons=main_btns())
 
     elif data == "renew_menu":
-        btns = [
-            [TButton.inline(f"Gói 1 Ngày ({PRICE_BOT_1D:,}đ)", b"buy_1")],
-            [TButton.inline(f"Gói 7 Ngày ({PRICE_BOT_7D:,}đ)", b"buy_7")],
-            [TButton.inline("🔙 QUAY LẠI", b"back")]
-        ]
-        await e.edit("✨ **CHỌN GÓI GIA HẠN BOT**\n(Gia hạn xong tất cả clone sẽ tự hoạt động)", buttons=btns)
+        btns = [[TButton.inline(f"Gói 1 Ngày ({PRICE_BOT_1D:,}đ)", b"buy_1")], [TButton.inline(f"Gói 7 Ngày ({PRICE_BOT_7D:,}đ)", b"buy_7")], [TButton.inline("🔙 QUAY LẠI", b"back")]]
+        await e.edit("✨ **CHỌN GÓI GIA HẠN BOT**", buttons=btns)
 
     elif data.startswith("buy_"):
         days = int(data.split("_")[1])
@@ -143,44 +151,82 @@ async def cb_handler(e):
 
     elif data == "list_clones":
         res = supabase.table("my_clones").select("*").eq("owner_id", uid).execute()
-        if not res.data: return await e.answer("❌ Bạn không có clone nào!", alert=True)
+        if not res.data: return await e.answer("❌ Chưa có clone nào!", alert=True)
         btns = [[TButton.inline(f"🗑 Xóa {c['phone']}", f"del_{c['id']}")] for c in res.data]
         btns.append([TButton.inline("🔙 QUAY LẠI", b"back")])
-        await e.edit("📱 **DANH SÁCH CLONE ĐANG TREO**", buttons=btns)
+        await e.edit("📱 **DANH SÁCH CLONE**", buttons=btns)
 
     elif data.startswith("del_"):
         supabase.table("my_clones").delete().eq("id", data.split("_")[1]).execute()
         await e.answer("✅ Đã gỡ clone!", alert=True)
         await cb_handler(e)
 
-# ==================== THÊM ACC CLONE ====================
+# ==================== THÊM ACC ====================
 @bot.on(events.CallbackQuery(data=b"add_clone"))
 async def add_clone_process(e):
     user = db_get_user(e.sender_id)
-    if user['balance'] < PRICE_ADD_ACC:
-        return await e.answer(f"❌ Cần {PRICE_ADD_ACC:,}đ để thêm clone", alert=True)
+    if user['balance'] < PRICE_ADD_ACC: return await e.answer(f"❌ Cần {PRICE_ADD_ACC:,}đ", alert=True)
 
     async with bot.conversation(e.sender_id) as conv:
         try:
-            await conv.send_message("📞 Nhập số điện thoại (VD: +84123...):")
+            await conv.send_message("📞 Nhập số điện thoại (+84...):")
             phone = (await conv.get_response()).text.strip().replace(" ", "")
             client = TelegramClient(StringSession(), API_ID, API_HASH)
             await client.connect()
             await client.send_code_request(phone)
-            await conv.send_message("📩 Nhập mã OTP:")
+            await conv.send_message("📩 Nhập OTP:")
             otp = (await conv.get_response()).text.strip()
             try:
                 await client.sign_in(phone, otp)
             except SessionPasswordNeededError:
-                await conv.send_message("🔐 Nhập mật khẩu 2FA:")
+                await conv.send_message("🔐 Nhập 2FA:")
                 await client.sign_in(password=(await conv.get_response()).text.strip())
 
             supabase.table("users").update({"balance": user['balance'] - PRICE_ADD_ACC}).eq("user_id", e.sender_id).execute()
             supabase.table("my_clones").insert({"owner_id": e.sender_id, "phone": phone, "session": client.session.save()}).execute()
-            await conv.send_message(f"✅ Thành công! Clone `{phone}` đã bắt đầu treo.")
+            await conv.send_message(f"✅ Đã thêm clone `{phone}`!")
             asyncio.create_task(worker_grab_loop(client, phone, e.sender_id))
         except Exception as ex:
             await conv.send_message(f"❌ Lỗi: {str(ex)}")
+
+# ==================== TÍNH NĂNG ADMIN ====================
+@bot.on(events.NewMessage(pattern="/admin"))
+async def admin_cmd(e):
+    if e.sender_id != ADMIN_ID: return
+    btns = [
+        [TButton.inline("📊 THỐNG KÊ", b"admin_stats"), TButton.inline("💰 CỘNG/TRỪ TIỀN", b"admin_money")],
+        [TButton.inline("❌ ĐÓNG", b"admin_close")]
+    ]
+    await e.respond("👨‍💻 **MENU QUẢN TRỊ**", buttons=btns)
+
+@bot.on(events.CallbackQuery(pattern=re.compile(b"admin_.*")))
+async def admin_cb_handler(e):
+    if e.sender_id != ADMIN_ID: return
+    data = e.data.decode()
+    
+    if data == "admin_stats":
+        u_res = supabase.table("users").select("*").execute()
+        c_res = supabase.table("my_clones").select("*").execute()
+        txt = f"📊 **THỐNG KÊ**\n👥 Users: {len(u_res.data)}\n📱 Clones: {len(c_res.data)}\n💰 Tổng tiền: {sum(u['balance'] for u in u_res.data):,}đ"
+        await e.edit(txt, buttons=[[TButton.inline("🔙 QUAY LẠI", b"admin_back")]])
+        
+    elif data == "admin_back":
+        await admin_cmd(e)
+
+    elif data == "admin_close":
+        await e.delete()
+
+    elif data == "admin_money":
+        await e.delete()
+        async with bot.conversation(e.sender_id) as conv:
+            await conv.send_message("👤 Nhập ID khách:")
+            tid = int((await conv.get_response()).text)
+            await conv.send_message("💰 Số tiền (âm để trừ):")
+            amt = int((await conv.get_response()).text)
+            
+            user = db_get_user(tid)
+            supabase.table("users").update({"balance": user['balance'] + amt}).eq("user_id", tid).execute()
+            await conv.send_message(f"✅ ID {tid} ví mới: {user['balance'] + amt:,}đ")
 
 # ==================== WEBHOOK & STARTUP ====================
 app = Flask(__name__)
@@ -190,29 +236,32 @@ def home(): return "Bot is Alive", 200
 @app.route('/sepay-webhook', methods=['POST'])
 def webhook():
     d = request.json
-    content = d.get("content", "").upper()
-    m = re.search(r'NAP\s+(\d+)', content)
+    m = re.search(r'NAP\s+(\d+)', d.get("content", "").upper())
     if m:
         uid, amt = int(m.group(1)), int(d.get("transferAmount", 0))
         user = db_get_user(uid)
         supabase.table("users").update({"balance": user['balance'] + amt}).eq("user_id", uid).execute()
-        asyncio.run_coroutine_threadsafe(bot.send_message(uid, f"✅ **NẠP TIỀN THÀNH CÔNG!**\n💰 +{amt:,} VNĐ"), asyncio.get_event_loop())
+        # Chạy an toàn với loop toàn cục
+        asyncio.run_coroutine_threadsafe(bot.send_message(uid, f"✅ **NẠP TIỀN THÀNH CÔNG!**\n💰 +{amt:,} VNĐ"), loop)
     return jsonify({"status": "ok"}), 200
 
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
-    # Tự khởi động lại dàn clone cũ
     try:
         clones = supabase.table("my_clones").select("*").execute()
         for c in clones.data:
             cl = TelegramClient(StringSession(c['session']), API_ID, API_HASH)
             asyncio.create_task(worker_grab_loop(cl, c['phone'], c['owner_id']))
     except: pass
-    print(">>> BOT ĐANG CHẠY CHẾ ĐỘ GIA HẠN USER <<<")
+    print(">>> BOT ĐANG CHẠY - ADMIN & BẮT CODE SẴN SÀNG <<<")
     await bot.run_until_disconnected()
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
-    Thread(target=lambda: app.run(host='0.0.0.0', port=port), daemon=True).start()
-    asyncio.run(main())
+    Thread(target=lambda: app.run(host='0.0.0.0', port=port, use_reloader=False), daemon=True).start()
     
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        pass
+                                        
